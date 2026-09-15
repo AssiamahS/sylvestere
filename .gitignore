@@ -3,3 +3,5 @@ ios/*.xcodeproj
 ios/build/
 worker/node_modules/
 worker/.wrangler/
+agent/.env
+agent/__pycache__/

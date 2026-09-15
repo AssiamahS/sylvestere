@@ -126,6 +126,72 @@ async function runOpenRouter(env, messages) {
   return { data: normalize(extractJSON(text), text), model: d.model || 'openrouter' };
 }
 
+// ---- Mac relay: the user's own Claude Code (Max subscription) dials OUT to this DO and answers turns.
+export class Brain {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+    this.pending = new Map();
+  }
+
+  macSockets() {
+    return this.state.getWebSockets('mac').filter((ws) => ws.readyState === 1);
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname === '/mac') {
+      if (!this.env.MAC_TOKEN || url.searchParams.get('token') !== this.env.MAC_TOKEN) return new Response('forbidden', { status: 403 });
+      if (request.headers.get('Upgrade') !== 'websocket') return new Response('expected websocket', { status: 426 });
+      const pair = new WebSocketPair();
+      this.state.acceptWebSocket(pair[1], ['mac']);
+      return new Response(null, { status: 101, webSocket: pair[0] });
+    }
+    if (url.pathname === '/status') {
+      return json({ mac: this.macSockets().length, pending: this.pending.size }, 200, {});
+    }
+    if (url.pathname === '/ask' && request.method === 'POST') {
+      const macs = this.macSockets();
+      if (!macs.length) return json({ error: 'mac offline' }, 503, {});
+      const body = await request.json();
+      const id = crypto.randomUUID();
+      const text = await new Promise((resolve) => {
+        const timer = setTimeout(() => { this.pending.delete(id); resolve(null); }, 45000);
+        this.pending.set(id, { resolve, timer });
+        try { macs[0].send(JSON.stringify({ id, system: body.system, messages: body.messages })); }
+        catch (e) { clearTimeout(timer); this.pending.delete(id); resolve(null); }
+      });
+      if (text == null) return json({ error: 'mac timeout' }, 504, {});
+      return json({ text }, 200, {});
+    }
+    return new Response('not found', { status: 404 });
+  }
+
+  webSocketMessage(ws, msg) {
+    let d;
+    try { d = JSON.parse(typeof msg === 'string' ? msg : new TextDecoder().decode(msg)); } catch { return; }
+    if (d.type === 'ping') { try { ws.send(JSON.stringify({ type: 'pong' })); } catch {} return; }
+    const p = d.id && this.pending.get(d.id);
+    if (p) { clearTimeout(p.timer); this.pending.delete(d.id); p.resolve(String(d.text ?? '')); }
+  }
+
+  webSocketClose(ws) { try { ws.close(); } catch {} }
+  webSocketError(ws) { try { ws.close(); } catch {} }
+}
+
+async function runMac(env, messages) {
+  const stub = env.BRAIN.get(env.BRAIN.idFromName('main'));
+  const system = messages[0].content;
+  const r = await stub.fetch('https://brain/ask', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ system, messages: messages.slice(1) }),
+  });
+  const d = await r.json();
+  if (!r.ok || d.error) throw new Error(d.error || `relay ${r.status}`);
+  return { data: normalize(extractJSON(d.text), d.text), model: 'claude (mac)' };
+}
+
 export default {
   async fetch(request, env) {
     const origin = request.headers.get('Origin');
@@ -133,6 +199,10 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+    if (url.pathname === '/mac' || url.pathname === '/status') {
+      const stub = env.BRAIN.get(env.BRAIN.idFromName('main'));
+      return stub.fetch(request);
+    }
     if (url.pathname === '/health') return json({ ok: true, models: MODELS }, 200, cors);
     if (url.pathname !== '/chat' || request.method !== 'POST') return json({ error: 'not found' }, 404, cors);
 
@@ -149,6 +219,14 @@ export default {
       messages.push({ role: 'user', content: '[The learner has just joined. Open the scene with your first line.]' });
     }
 
+    if (env.MAC_TOKEN && body.brain !== 'cloud') {
+      try {
+        const { data, model } = await runMac(env, messages);
+        if (data.reply) return json({ ...data, model }, 200, cors);
+      } catch (e) {
+        // Mac asleep or slow: fall through to Workers AI.
+      }
+    }
     try {
       const { data, model } = await runWorkersAI(env, messages);
       return json({ ...data, model }, 200, cors);

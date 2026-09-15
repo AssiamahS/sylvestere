@@ -4,5 +4,7 @@
   "main": "src/index.js",
   "compatibility_date": "2025-10-01",
   "ai": { "binding": "AI" },
+  "durable_objects": { "bindings": [{ "name": "BRAIN", "class_name": "Brain" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Brain"] }],
   "observability": { "enabled": true }
 }
