@@ -46,12 +46,12 @@ select { width: 100%; padding: 12px 14px; border-radius: 14px; border: 1px solid
 .fine { margin: 12px 0 0; font-size: 12px; color: var(--muted); text-align: center; }
 
 #top { position: fixed; top: 0; left: 0; right: 0; z-index: 10; display: flex; align-items: center; gap: 12px; padding: calc(12px + var(--safe-top)) 16px 12px; }
-.icon { width: 40px; height: 40px; border-radius: 50%; background: rgba(255,255,255,.14); color: #fff; font-size: 16px; backdrop-filter: blur(8px); }
+.icon { width: 40px; height: 40px; border-radius: 50%; background: rgba(20,12,40,.45); color: #fff; font-size: 16px; backdrop-filter: blur(8px); }
 .progress { flex: 1; height: 8px; border-radius: 999px; background: rgba(255,255,255,.18); overflow: hidden; }
 #progressFill { height: 100%; width: 0; background: linear-gradient(90deg, #4be27a, #9dffb8); border-radius: 999px; transition: width .4s ease; }
 #turnLabel { color: rgba(255,255,255,.8); font-size: 13px; font-weight: 700; min-width: 32px; text-align: right; }
 
-#session { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 0 16px calc(18px + var(--safe-bottom)); }
+#session { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 0 16px calc(42px + var(--safe-bottom)); }
 
 .bubble { position: relative; width: min(100%, 420px); background: var(--card); border-radius: 22px; padding: 16px 18px 14px; box-shadow: 0 18px 40px rgba(0,0,0,.28); animation: pop .25s ease; }
 .bubble::after { content: ""; position: absolute; left: 50%; bottom: -10px; width: 20px; height: 20px; background: var(--card); transform: translateX(-50%) rotate(45deg); border-radius: 4px; }
@@ -72,8 +72,8 @@ select { width: 100%; padding: 12px 14px; border-radius: 14px; border: 1px solid
 .status { min-height: 18px; color: rgba(255,255,255,.85); font-size: 13px; font-weight: 600; letter-spacing: .04em; }
 
 .controls { display: flex; align-items: center; justify-content: center; gap: 28px; width: 100%; }
-.round { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-radius: 50%; color: #fff; background: rgba(255,255,255,.14); backdrop-filter: blur(10px); position: relative; }
-.round small { position: absolute; bottom: -20px; font-size: 10px; letter-spacing: .12em; font-weight: 800; color: rgba(255,255,255,.75); }
+.round { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-radius: 50%; color: #fff; background: rgba(20,12,40,.45); backdrop-filter: blur(10px); position: relative; box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+.round small { position: absolute; bottom: -20px; font-size: 10px; letter-spacing: .12em; font-weight: 800; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.6); }
 .round.small { width: 56px; height: 56px; font-size: 20px; }
 .round.mic { width: 78px; height: 78px; font-size: 30px; background: var(--purple); box-shadow: 0 12px 30px rgba(108,61,244,.55); transition: transform .15s ease, background .2s ease; }
 .round.mic.listening { background: #e0356b; box-shadow: 0 0 0 10px rgba(224,53,107,.25), 0 12px 30px rgba(224,53,107,.5); animation: pulse 1.2s ease-in-out infinite; }
