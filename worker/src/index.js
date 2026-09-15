@@ -12,6 +12,8 @@ const ALLOWED_ORIGINS = [
   'http://127.0.0.1:8080',
 ];
 
+const LANG_NAMES = { tw: 'Twi (Akan, Ghana)', fr: 'French', es: 'Spanish', pt: 'Portuguese', de: 'German', it: 'Italian', ar: 'Arabic', zh: 'Chinese', ja: 'Japanese', ko: 'Korean', hi: 'Hindi' };
+
 const LEVEL_HINT = {
   beginner: 'Use very simple words and short sentences (A1-A2). Speak slowly in spirit: max 2 short sentences per turn.',
   intermediate: 'Use everyday natural English (B1-B2). Max 3 sentences per turn.',
@@ -28,7 +30,7 @@ const SCENARIOS = {
 };
 
 function corsHeaders(origin) {
-  const ok = !origin || ALLOWED_ORIGINS.includes(origin) || origin === 'null';
+  const ok = !origin || ALLOWED_ORIGINS.includes(origin) || origin === 'null' || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
   return {
     'Access-Control-Allow-Origin': ok ? (origin || '*') : ALLOWED_ORIGINS[0],
     'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
@@ -55,7 +57,7 @@ function systemPrompt({ scenario, level, native, tutor }) {
     `Learner level: ${level || 'intermediate'}. ${lvl}`,
     `Stay in character and keep the conversation moving with a question at the end of most turns.`,
     `When the learner makes a grammar, vocabulary or word-order mistake, gently correct it: give the corrected sentence and a one-line tip. If their sentence is fine, leave "correction" empty.`,
-    nat ? `The learner's native language code is "${nat}". Put a translation of your reply in that language in "translation".` : `The learner is a native English speaker practising fluency; leave "translation" empty.`,
+    `Always leave "translation" as an empty string (the app translates separately).`,
     `After about 8 exchanges, wrap the scene up naturally and set "done" to true.`,
     `Reply ONLY with a JSON object, no markdown, no prose outside JSON:`,
     `{"reply": "<what you say to the learner, in English>", "translation": "<reply translated to the learner's language, or empty string>", "correction": "<corrected version of the learner's last sentence, or empty string>", "tip": "<one short tip about the mistake, or empty string>", "done": false}`,
@@ -204,6 +206,48 @@ export default {
       return stub.fetch(request);
     }
     if (url.pathname === '/health') return json({ ok: true, models: MODELS }, 200, cors);
+    if (url.pathname === '/translate' && request.method === 'POST') {
+      let b; try { b = await request.json(); } catch { return json({ error: 'bad json' }, 400, cors); }
+      const text = String(b.text || '').slice(0, 1000); const to = String(b.to || '').slice(0, 5);
+      if (!text || !to || to === 'en') return json({ text: '' }, 200, cors);
+      try {
+        const out = await env.AI.run('@cf/meta/m2m100-1.2b', { text, source_lang: 'en', target_lang: to });
+        return json({ text: String(out.translated_text || '').trim() }, 200, cors);
+      } catch (e) {
+        // Language not in m2m100 (e.g. Twi): ask the LLM instead.
+        try {
+          const name = LANG_NAMES[to] || to;
+          const out = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+            messages: [
+              { role: 'system', content: `Translate the user's English text into ${name}. Reply with the translation only, nothing else.` },
+              { role: 'user', content: text },
+            ], max_tokens: 300, temperature: 0.2,
+          });
+          const t = typeof out === 'string' ? out : (out.response || '');
+          return json({ text: String(t).trim() }, 200, cors);
+        } catch (e2) { return json({ error: `translate failed: ${e.message}; ${e2.message}` }, 502, cors); }
+      }
+    }
+    if (url.pathname === '/stt' && request.method === 'POST') {
+      // Speech-to-text fallback for browsers without a working Web Speech API (Chromium forks, WKWebView).
+      const buf = await request.arrayBuffer();
+      if (!buf.byteLength || buf.byteLength > 8 * 1024 * 1024) return json({ error: 'bad audio' }, 400, cors);
+      try {
+        const out = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
+          audio: btoa(String.fromCharCode(...new Uint8Array(buf))),
+          language: 'en',
+          task: 'transcribe',
+        });
+        return json({ text: String(out.text || '').trim() }, 200, cors);
+      } catch (e) {
+        try {
+          const out = await env.AI.run('@cf/openai/whisper', { audio: [...new Uint8Array(buf)] });
+          return json({ text: String(out.text || '').trim() }, 200, cors);
+        } catch (e2) {
+          return json({ error: `stt failed: ${e.message}; ${e2.message}` }, 502, cors);
+        }
+      }
+    }
     if (url.pathname !== '/chat' || request.method !== 'POST') return json({ error: 'not found' }, 404, cors);
 
     let body;

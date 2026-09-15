@@ -33,9 +33,11 @@ const tts = {
     if (!vs.length) return;
     const en = vs.filter(v => /^en[-_]/i.test(v.lang));
     const prefer = ['Samantha', 'Ava', 'Allison', 'Zoe', 'Google US English', 'Microsoft Aria', 'Microsoft Jenny', 'Karen', 'Moira'];
-    this.voice = en.find(v => prefer.some(p => v.name.includes(p)) && /premium|enhanced/i.test(v.name))
+    const local = en.filter(v => v.localService);
+    this.voice = local.find(v => prefer.some(p => v.name.includes(p)) && /premium|enhanced/i.test(v.name))
+      || local.find(v => prefer.some(p => v.name.includes(p)))
       || en.find(v => prefer.some(p => v.name.includes(p)))
-      || en.find(v => v.lang === 'en-US') || en[0] || vs[0];
+      || local.find(v => v.lang === 'en-US') || en.find(v => v.lang === 'en-US') || en[0] || vs[0];
   },
   speak(text, { onStart, onEnd, onWord } = {}) {
     this.stop();
@@ -57,7 +59,7 @@ const tts = {
     let ended = false;
     const finish = () => { if (ended) return; ended = true; this.speaking = false; onEnd && onEnd(); };
     u.onstart = () => { this.speaking = true; onStart && onStart(); };
-    u.onboundary = () => onWord && onWord();
+    u.onboundary = (ev) => { if (!ev.name || ev.name === 'word') onWord && onWord(); };
     u.onend = finish; u.onerror = finish;
     // Safari sometimes never fires onend; guard with a timer.
     setTimeout(finish, 1500 + text.length * 90);
@@ -75,23 +77,36 @@ if (!native && 'speechSynthesis' in window) {
 }
 
 // ---------- speech: STT ----------
+// Native bridge on iOS; otherwise the browser's SpeechRecognition AND a MediaRecorder run together.
+// If recognition never answers (Chromium forks without Google's speech keys, e.g. Dia/Brave) the
+// recording goes to the worker's Whisper endpoint instead.
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const REC_MIME = (window.MediaRecorder && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) ? 'audio/webm;codecs=opus' : null;
+const canRecord = () => Boolean(REC_MIME && navigator.mediaDevices?.getUserMedia);
+
 const stt = {
-  rec: null, active: false,
-  get available() { return Boolean(native || SR); },
-  start({ onPartial, onFinal, onError, onEnd }) {
+  rec: null, media: null, stream: null, ctx: null, active: false, settled: false, chunks: [], heardSpeech: false, timers: [], recPending: false, srError: null,
+  get available() { return Boolean(native || SR || canRecord()); },
+
+  start(cb) {
     this.stop();
-    this.active = true;
-    if (native) {
-      bridge.onSpeech = (e) => {
-        if (e.state === 'partial') onPartial && onPartial(e.text || '');
-        else if (e.state === 'final') { this.active = false; bridge.onSpeech = null; onFinal && onFinal(e.text || ''); onEnd && onEnd(); }
-        else if (e.state === 'error') { this.active = false; bridge.onSpeech = null; onError && onError(e.message || 'speech error'); onEnd && onEnd(); }
-      };
-      native.post({ type: 'listen', lang: 'en-US' });
-      return;
-    }
-    if (!SR) { onError && onError('no-stt'); onEnd && onEnd(); return; }
+    this.active = true; this.settled = false; this.chunks = []; this.heardSpeech = false; this.srError = null; this.recPending = false; this.recUsed = false;
+    if (native) return this.startNative(cb);
+    if (!SR && !canRecord()) { cb.onError && cb.onError('no-stt'); cb.onEnd && cb.onEnd(); return; }
+    if (canRecord()) this.startRecorder(cb);
+    if (SR) this.startSR(cb);
+  },
+
+  startNative(cb) {
+    bridge.onSpeech = (e) => {
+      if (e.state === 'partial') cb.onPartial && cb.onPartial(e.text || '');
+      else if (e.state === 'final') { this.active = false; bridge.onSpeech = null; cb.onFinal && cb.onFinal(e.text || ''); cb.onEnd && cb.onEnd(); }
+      else if (e.state === 'error') { this.active = false; bridge.onSpeech = null; cb.onError && cb.onError(e.message || 'speech error'); cb.onEnd && cb.onEnd(); }
+    };
+    native.post({ type: 'listen', lang: 'en-US' });
+  },
+
+  startSR(cb) {
     const r = new SR();
     r.lang = 'en-US'; r.interimResults = true; r.continuous = false; r.maxAlternatives = 1;
     let finalText = '';
@@ -101,22 +116,105 @@ const stt = {
         const t = ev.results[i][0].transcript;
         if (ev.results[i].isFinal) finalText += t; else interim += t;
       }
-      onPartial && onPartial((finalText + ' ' + interim).trim());
+      this.heardSpeech = true;
+      cb.onPartial && cb.onPartial((finalText + ' ' + interim).trim());
     };
-    r.onerror = (ev) => { onError && onError(ev.error || 'speech error'); };
-    r.onend = () => { this.active = false; this.rec = null; onFinal && onFinal(finalText.trim()); onEnd && onEnd(); };
+    r.onerror = (ev) => { this.srError = ev.error; };
+    r.onend = () => {
+      this.rec = null;
+      if (finalText.trim()) return this.settle(cb, finalText.trim());
+      // Recognition gave nothing (Chromium forks fail fast): keep recording, the silence
+      // detector will stop it and the audio goes to Whisper.
+      if (this.media || this.recPending || this.recUsed) return; // recorder path will settle
+      this.settle(cb, '', this.srError);
+    };
     this.rec = r;
-    try { r.start(); } catch (e) { onError && onError(String(e)); onEnd && onEnd(); }
+    try { r.start(); } catch (e) { this.rec = null; if (!this.media) this.settle(cb, '', String(e)); }
+  },
+
+  async startRecorder(cb) {
+    this.recPending = true;
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    } catch (e) {
+      this.stream = null; this.recPending = false;
+      if (!this.rec) this.settle(cb, '', 'not-allowed');
+      return;
+    }
+    this.recPending = false;
+    if (!this.active || this.settled) { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; return; }
+    const media = new MediaRecorder(this.stream, { mimeType: REC_MIME });
+    media.ondataavailable = (e) => { if (e.data.size) this.chunks.push(e.data); };
+    media.onstop = async () => {
+      this.releaseMic();
+      if (this.settled) return;
+      const blob = new Blob(this.chunks, { type: 'audio/webm' });
+      if (!this.heardSpeech || blob.size < 2000) return this.settle(cb, '', this.srError);
+      setStatus('Transcribing…');
+      try {
+        const r = await fetch(`${API}/stt`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: blob });
+        const d = await r.json();
+        if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
+        this.settle(cb, (d.text || '').trim());
+      } catch (e) { this.settle(cb, '', `transcription failed: ${e.message}`); }
+    };
+    this.media = media; this.recUsed = true;
+    media.start(250);
+    if (!this.rec) cb.onPartial && cb.onPartial('');
+
+    // Energy-based end-of-speech: 1.5 s of silence after speech, 8 s with no speech at all, 20 s hard cap.
+    try {
+      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const src = this.ctx.createMediaStreamSource(this.stream);
+      const an = this.ctx.createAnalyser(); an.fftSize = 1024; src.connect(an);
+      const buf = new Float32Array(an.fftSize);
+      let lastVoice = 0; const t0 = performance.now();
+      const tick = () => {
+        if (!this.media || this.media.state !== 'recording') return;
+        an.getFloatTimeDomainData(buf);
+        let sum = 0; for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+        const rms = Math.sqrt(sum / buf.length);
+        const now = performance.now();
+        if (rms > 0.02) { lastVoice = now; if (!this.heardSpeech) { this.heardSpeech = true; if (!this.rec) cb.onPartial && cb.onPartial('(listening…)'); } }
+        if ((this.heardSpeech && now - lastVoice > 1500) || (!this.heardSpeech && now - t0 > 8000) || now - t0 > 20000) { this.stopAll(); return; }
+        this.timers.push(setTimeout(tick, 100));
+      };
+      tick();
+    } catch (e) { this.timers.push(setTimeout(() => this.stopAll(), 12000)); }
+  },
+
+  stopRecorder() { if (this.media && this.media.state !== 'inactive') { try { this.media.stop(); } catch {} } },
+  releaseMic() {
+    this.timers.forEach(clearTimeout); this.timers = [];
+    if (this.stream) { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
+    if (this.ctx) { try { this.ctx.close(); } catch {} this.ctx = null; }
+    this.media = null;
+  },
+  stopAll() {
+    if (this.rec) { try { this.rec.stop(); } catch {} }
+    this.stopRecorder();
+  },
+  settle(cb, text, err) {
+    if (this.settled) return;
+    this.settled = true; this.active = false;
+    if (this.rec) { try { this.rec.abort(); } catch {} this.rec = null; }
+    this.releaseMic();
+    if (!text && err) cb.onError && cb.onError(err);
+    cb.onFinal && cb.onFinal(text);
+    cb.onEnd && cb.onEnd();
   },
   stop() {
-    if (native) { if (this.active) native.post({ type: 'stopListen' }); }
-    else if (this.rec) { try { this.rec.stop(); } catch {} }
+    if (!this.active) return;
+    if (native) { native.post({ type: 'stopListen' }); return; }
+    this.stopAll();
   },
 };
 
+window.__stt = stt;
+
 // ---------- 3D avatar ----------
 const avatar = {
-  vrm: null, clock: new THREE.Clock(), talking: false, wordPulse: 0, blinkT: 1.5, mood: 0,
+  vrm: null, clock: new THREE.Clock(), talking: false, wordPulse: 0, blinkT: 1.5, mood: 0, wordSeen: false, lastWord: 0,
   async init() {
     const canvas = $('stage');
     this.renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
@@ -194,12 +292,16 @@ const avatar = {
     if (this.blinkT <= 0) this.blinkT = 2.2 + Math.random() * 3.5;
     this.expr('blink', blink);
     // mouth
-    this.wordPulse = Math.max(0, this.wordPulse - dt * 4);
-    if (this.talking) {
-      const env = 0.35 + 0.65 * Math.abs(Math.sin(t * 8.7)) * (0.6 + 0.4 * Math.sin(t * 2.3 + 1)) + this.wordPulse * 0.4;
-      this.expr('aa', env * 0.75);
-      this.expr('ih', Math.max(0, Math.sin(t * 6.1)) * 0.25);
-      this.expr('oh', Math.max(0, Math.sin(t * 4.3 + 2)) * 0.3);
+    this.wordPulse = Math.max(0, this.wordPulse - dt * 5);
+    // With word-boundary events the mouth closes between words/pauses; without them, a steady babble.
+    const sinceWord = performance.now() - this.lastWord;
+    const mouthOpen = this.talking && (!this.wordSeen || sinceWord < 420);
+    if (mouthOpen) {
+      const gate = this.wordSeen ? Math.max(0.35, 1 - sinceWord / 420) : 1;
+      const env = (0.3 + 0.7 * Math.abs(Math.sin(t * 9.5)) * (0.6 + 0.4 * Math.sin(t * 2.3 + 1)) + this.wordPulse * 0.35) * gate;
+      this.expr('aa', env * 0.8);
+      this.expr('ih', Math.max(0, Math.sin(t * 6.1)) * 0.22 * gate);
+      this.expr('oh', Math.max(0, Math.sin(t * 4.3 + 2)) * 0.28 * gate);
       this.expr('happy', 0.15);
     } else {
       this.expr('aa', 0); this.expr('ih', 0); this.expr('oh', 0);
@@ -225,8 +327,11 @@ function showBubble(data, heardText) {
   $('replyText').textContent = data.reply;
   const tx = $('txText'), tg = $('toggleTx');
   tx.classList.add('hidden'); tg.textContent = '👁 See translation';
-  if (data.translation && state.native !== 'en') { tx.textContent = data.translation; tg.classList.remove('hidden'); }
-  else tg.classList.add('hidden');
+  if (state.native !== 'en') {
+    tg.classList.remove('hidden');
+    if (data.translation) tx.textContent = data.translation;
+    else { tx.textContent = 'Translating…'; translate(data.reply, state.native).then((t) => { if ($('replyText').textContent === data.reply) tx.textContent = t || 'Translation unavailable'; }); }
+  } else tg.classList.add('hidden');
   const c = $('correction');
   if (data.correction && heardText && data.correction.trim().toLowerCase() !== heardText.trim().toLowerCase()) {
     $('corrText').textContent = data.correction; $('tipText').textContent = data.tip || '';
@@ -235,11 +340,17 @@ function showBubble(data, heardText) {
   } else c.classList.add('hidden');
   $('bubble').classList.remove('hidden');
 }
+async function translate(text, to) {
+  try {
+    const r = await fetch(`${API}/translate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, to }) });
+    const d = await r.json(); return d.text || '';
+  } catch { return ''; }
+}
 function say(text, after) {
-  avatar.talking = true;
+  avatar.talking = false; avatar.wordSeen = false;
   tts.speak(text, {
-    onStart: () => { avatar.talking = true; },
-    onWord: () => { avatar.wordPulse = 1; },
+    onStart: () => { avatar.talking = true; avatar.lastWord = performance.now(); },
+    onWord: () => { avatar.wordSeen = true; avatar.wordPulse = 1; avatar.lastWord = performance.now(); },
     onEnd: () => { avatar.talking = false; after && after(); },
   });
 }
@@ -282,12 +393,12 @@ function startListening() {
   tts.stop(); avatar.talking = false;
   const mic = $('micBtn'); mic.classList.add('listening');
   $('heard').classList.remove('hidden'); $('heardText').textContent = '…';
-  setStatus('Listening… tap again when you are done');
+  setStatus('Listening… speak, then pause (or tap again)');
   stt.start({
     onPartial: (t) => { $('heardText').textContent = t || '…'; },
     onError: (err) => {
       mic.classList.remove('listening');
-      if (err === 'not-allowed' || err === 'service-not-allowed') setStatus('Microphone blocked. Allow the mic, or use the keyboard.');
+      if (err === 'not-allowed' || err === 'service-not-allowed' || err === 'audio-capture') setStatus('Microphone blocked. Allow the mic, or use the keyboard.');
       else if (err === 'no-stt') { setStatus('Speech recognition is not available in this browser. Use the keyboard.'); $('typeForm').classList.remove('hidden'); }
       else setStatus(`Did not catch that (${err}). Try again.`);
     },
