@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1a0f2e">
+<title>Sylvestere — Speak English with Sylvie</title>
+<link rel="icon" href="assets/icon.png">
+<link rel="apple-touch-icon" href="assets/icon.png">
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+    "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.5.5/lib/three-vrm.module.min.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="bg" aria-hidden="true">
+  <span class="bokeh b1"></span><span class="bokeh b2"></span><span class="bokeh b3"></span>
+  <span class="bokeh b4"></span><span class="bokeh b5"></span><span class="bokeh b6"></span>
+</div>
+<canvas id="stage"></canvas>
+
+<div id="loading" class="overlay">
+  <div class="spinner"></div>
+  <p id="loadingText">Loading Sylvie…</p>
+</div>
+
+<section id="home" class="overlay hidden">
+  <div class="home-card">
+    <h1>Sylvestere</h1>
+    <p class="sub">Speak English with Sylvie, your AI tutor. Pick a scene, talk, get corrected.</p>
+
+    <h2>Scene</h2>
+    <div class="chips" id="scenarios">
+      <button data-v="cafe" class="on">☕ Cafe order</button>
+      <button data-v="smalltalk">🎉 Party small talk</button>
+      <button data-v="interview">💼 Job interview</button>
+      <button data-v="airport">✈️ Airport check-in</button>
+      <button data-v="hotel">🏨 Hotel check-in</button>
+      <button data-v="doctor">🩺 Doctor visit</button>
+    </div>
+
+    <h2>Your level</h2>
+    <div class="chips" id="levels">
+      <button data-v="beginner">Beginner</button>
+      <button data-v="intermediate" class="on">Intermediate</button>
+      <button data-v="advanced">Advanced</button>
+    </div>
+
+    <h2>Translations in</h2>
+    <div class="row">
+      <select id="native">
+        <option value="fr">Français</option>
+        <option value="es">Español</option>
+        <option value="pt">Português</option>
+        <option value="de">Deutsch</option>
+        <option value="it">Italiano</option>
+        <option value="ar">العربية</option>
+        <option value="zh">中文</option>
+        <option value="ja">日本語</option>
+        <option value="ko">한국어</option>
+        <option value="hi">हिन्दी</option>
+        <option value="tw">Twi</option>
+        <option value="en">None (English only)</option>
+      </select>
+    </div>
+
+    <button id="start" class="primary">Start talking</button>
+    <p class="fine" id="capNote"></p>
+  </div>
+</section>
+
+<header id="top" class="hidden">
+  <button id="close" class="icon" aria-label="End session">✕</button>
+  <div class="progress"><div id="progressFill"></div></div>
+  <span id="turnLabel">0/8</span>
+</header>
+
+<section id="session" class="hidden">
+  <div id="bubble" class="bubble hidden">
+    <div class="tag" id="bubbleTag">SYLVIE</div>
+    <p id="replyText"></p>
+    <button id="toggleTx" class="link hidden">👁 See translation</button>
+    <p id="txText" class="tx hidden"></p>
+    <div id="correction" class="correction hidden">
+      <div class="corr-label">Better:</div>
+      <p id="corrText"></p>
+      <p id="tipText" class="tip"></p>
+    </div>
+  </div>
+
+  <div id="heard" class="heard hidden"><span class="you">YOU</span> <span id="heardText"></span></div>
+
+  <div id="status" class="status"></div>
+
+  <div class="controls">
+    <button id="typeBtn" class="round small" aria-label="Type instead"><span>⌨️</span><small>WRITE</small></button>
+    <button id="micBtn" class="round mic" aria-label="Talk"><span class="micIcon">🎤</span><small>TALK</small></button>
+    <button id="nextBtn" class="round small" aria-label="Skip"><span>→</span><small>SKIP</small></button>
+  </div>
+
+  <form id="typeForm" class="typeForm hidden">
+    <input id="typeInput" type="text" autocomplete="off" placeholder="Type your answer in English…">
+    <button type="submit" class="primary small">Send</button>
+  </form>
+</section>
+
+<section id="done" class="overlay hidden">
+  <div class="home-card">
+    <h1>Nice work!</h1>
+    <p class="sub" id="doneSummary"></p>
+    <div id="doneCorrections"></div>
+    <button id="again" class="primary">Practice another scene</button>
+  </div>
+</section>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

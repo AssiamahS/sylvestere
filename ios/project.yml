@@ -1,0 +1,51 @@
+name: Sylvestere
+options:
+  bundleIdPrefix: com.assiamah
+  deploymentTarget:
+    iOS: "26.0"
+  xcodeVersion: "26.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: 1.0.0
+    CURRENT_PROJECT_VERSION: 1
+    DEVELOPMENT_TEAM: QGMAWHX827
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  Sylvestere:
+    type: application
+    platform: iOS
+    sources:
+      - Sylvestere
+    info:
+      path: Sylvestere/Info.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleDisplayName: Sylvestere
+        CFBundleIconName: AppIcon
+        UILaunchScreen:
+          UIColorName: LaunchColor
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIViewControllerBasedStatusBarAppearance: true
+        ITSAppUsesNonExemptEncryption: false
+        NSMicrophoneUsageDescription: Sylvestere listens to you so Sylvie can hear your English and correct it.
+        NSSpeechRecognitionUsageDescription: Sylvestere turns your speech into text so Sylvie can reply to what you said.
+        UIBackgroundModes: [audio]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.assiamah.sylvestere
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_UIUserInterfaceStyle: Dark
+
+schemes:
+  Sylvestere:
+    build:
+      targets:
+        Sylvestere: all
+    run:
+      config: Debug

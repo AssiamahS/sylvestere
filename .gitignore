@@ -1,0 +1,5 @@
+.DS_Store
+ios/*.xcodeproj
+ios/build/
+worker/node_modules/
+worker/.wrangler/

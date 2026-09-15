@@ -1,0 +1,110 @@
+name: iOS
+
+on:
+  push:
+    branches: [main]
+    paths: ['ios/**', '.github/workflows/ios.yml']
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: ios
+
+jobs:
+  build:
+    name: Build (unsigned compile check)
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Build for device (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project Sylvestere.xcodeproj \
+            -scheme Sylvestere \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+
+  testflight:
+    name: Sign & upload to TestFlight
+    runs-on: macos-26
+    timeout-minutes: 45
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for App Store Connect credentials
+        id: creds
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$ASC_KEY_P8" ]; then
+            echo "have=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::ASC secrets not set — skipping TestFlight upload"
+          else
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write App Store Connect API key
+        if: steps.creds.outputs.have == 'true'
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/asc" "$HOME/private_keys"
+          printf '%s' "$ASC_KEY_P8" | base64 --decode > "$RUNNER_TEMP/asc/AuthKey.p8"
+          cp "$RUNNER_TEMP/asc/AuthKey.p8" "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+
+      - name: Install XcodeGen
+        if: steps.creds.outputs.have == 'true'
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        if: steps.creds.outputs.have == 'true'
+        run: |
+          # stamp the run number BEFORE generating — xcodegen bakes CFBundleVersion into the plists
+          sed -i '' "s/^    CURRENT_PROJECT_VERSION: .*/    CURRENT_PROJECT_VERSION: $GITHUB_RUN_NUMBER/" project.yml
+          xcodegen generate
+
+      - name: Archive (cloud-managed signing)
+        if: steps.creds.outputs.have == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project Sylvestere.xcodeproj \
+            -scheme Sylvestere \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Sylvestere.xcarchive \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER
+
+      - name: Export & upload to App Store Connect
+        if: steps.creds.outputs.have == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          xcodebuild -exportArchive \
+            -archivePath build/Sylvestere.xcarchive \
+            -exportOptionsPlist ExportOptions.plist \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
