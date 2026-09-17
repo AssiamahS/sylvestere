@@ -134,13 +134,15 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate Xcode project (iPhone only)
+        working-directory: ios
         run: |
-          cd ios && sed -i '' "s/^    CURRENT_PROJECT_VERSION: .*/    CURRENT_PROJECT_VERSION: $GITHUB_RUN_NUMBER/" project.yml
-          cd ios && xcodegen generate
+          sed -i '' "s/^    CURRENT_PROJECT_VERSION: .*/    CURRENT_PROJECT_VERSION: $GITHUB_RUN_NUMBER/" project.yml
+          xcodegen generate
       - name: Archive (unsigned)
+        working-directory: ios
         run: |
           set -o pipefail
-          cd ios && xcodebuild archive \
+          xcodebuild archive \
             -project Sylvestere.xcodeproj \
             -scheme Sylvestere \
             -configuration Release \
@@ -149,12 +151,13 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER
       - name: Export ad hoc IPA (cloud signing)
+        working-directory: ios
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           set -o pipefail
-          cd ios && xcodebuild -exportArchive \
+          xcodebuild -exportArchive \
             -archivePath build/Sylvestere.xcarchive \
             -exportOptionsPlist ExportOptionsAdHoc.plist \
             -exportPath build/adhoc \
@@ -162,8 +165,9 @@ jobs:
             -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8" \
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID"
-          ls -la ios/build/adhoc
+          ls -la build/adhoc
       - name: Publish install page to GitHub Pages
+        working-directory: ${{ github.workspace }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
