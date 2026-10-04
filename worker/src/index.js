@@ -129,6 +129,9 @@ async function runOpenRouter(env, messages) {
 }
 
 // ---- Mac relay: the user's own Claude Code (Max subscription) dials OUT to this DO and answers turns.
+const STALE_MS = 90_000;      // agent pings every 25s; 3 missed pings = dead socket
+const ASK_TIMEOUT_MS = 25_000; // warm turn is ~3s, cold ~8s; past this fall back to Workers AI
+
 export class Brain {
   constructor(state, env) {
     this.state = state;
@@ -136,8 +139,19 @@ export class Brain {
     this.pending = new Map();
   }
 
+  // Live Mac sockets, freshest first. The Mac agent pings every 25s; a socket that has not pinged
+  // in STALE_MS is a dead TCP session the DO never got a close frame for (DNS/Wi-Fi drop) — close it,
+  // otherwise /ask keeps sending turns into the void and every turn waits out the timeout.
   macSockets() {
-    return this.state.getWebSockets('mac').filter((ws) => ws.readyState === 1);
+    const now = Date.now();
+    const live = [];
+    for (const ws of this.state.getWebSockets('mac')) {
+      if (ws.readyState !== 1) continue;
+      const seen = (ws.deserializeAttachment() || {}).seen || 0;
+      if (now - seen > STALE_MS) { try { ws.close(1001, 'stale'); } catch {} continue; }
+      live.push({ ws, seen });
+    }
+    return live.sort((a, b) => b.seen - a.seen).map((x) => x.ws);
   }
 
   async fetch(request) {
@@ -147,6 +161,7 @@ export class Brain {
       if (request.headers.get('Upgrade') !== 'websocket') return new Response('expected websocket', { status: 426 });
       const pair = new WebSocketPair();
       this.state.acceptWebSocket(pair[1], ['mac']);
+      pair[1].serializeAttachment({ seen: Date.now() });
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
     if (url.pathname === '/status') {
@@ -158,7 +173,7 @@ export class Brain {
       const body = await request.json();
       const id = crypto.randomUUID();
       const text = await new Promise((resolve) => {
-        const timer = setTimeout(() => { this.pending.delete(id); resolve(null); }, 45000);
+        const timer = setTimeout(() => { this.pending.delete(id); resolve(null); }, ASK_TIMEOUT_MS);
         this.pending.set(id, { resolve, timer });
         try { macs[0].send(JSON.stringify({ id, system: body.system, messages: body.messages })); }
         catch (e) { clearTimeout(timer); this.pending.delete(id); resolve(null); }
@@ -172,6 +187,7 @@ export class Brain {
   webSocketMessage(ws, msg) {
     let d;
     try { d = JSON.parse(typeof msg === 'string' ? msg : new TextDecoder().decode(msg)); } catch { return; }
+    try { ws.serializeAttachment({ seen: Date.now() }); } catch {}
     if (d.type === 'ping') { try { ws.send(JSON.stringify({ type: 'pong' })); } catch {} return; }
     const p = d.id && this.pending.get(d.id);
     if (p) { clearTimeout(p.timer); this.pending.delete(d.id); p.resolve(String(d.text ?? '')); }
