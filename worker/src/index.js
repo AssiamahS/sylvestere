@@ -70,10 +70,10 @@ function systemPrompt({ scenario, level, native, tutor, target }) {
     `Stay in character and keep the conversation moving with a question at the end of most turns.`,
     `When the learner makes a grammar, vocabulary, gender/agreement or word-order mistake in ${lang}, gently correct it: give the corrected ${lang} sentence and a one-line tip written in ${tipLang}. If their sentence is fine, leave "correction" empty.`,
     nativeName ? `If the learner answers in ${nativeName} instead of ${lang}, put the ${lang} way to say it in "correction", explain in the tip that they should try it in ${lang}, and keep your reply in ${lang}.` : '',
-    `Always leave "translation" as an empty string (the app translates separately).`,
+    nativeName ? `Put a complete, natural ${nativeName} translation of your whole reply (every sentence, including the question) in "translation".` : `Leave "translation" as an empty string.`,
     `After about 8 exchanges, wrap the scene up naturally and set "done" to true.`,
     `Reply ONLY with a JSON object, no markdown, no prose outside JSON:`,
-    `{"reply": "<what you say to the learner, in ${lang}>", "translation": "", "correction": "<corrected ${lang} version of the learner's last sentence, or empty string>", "tip": "<one short tip in ${tipLang} about the mistake, or empty string>", "done": false}`,
+    `{"reply": "<what you say to the learner, in ${lang}>", "translation": "<${nativeName ? `your full reply in ${nativeName}` : 'empty string'}>", "correction": "<corrected ${lang} version of the learner's last sentence, or empty string>", "tip": "<one short tip in ${tipLang} about the mistake, or empty string>", "done": false}`,
   ].filter(Boolean).join('\n');
 }
 
@@ -240,21 +240,21 @@ export default {
       const text = String(b.text || '').slice(0, 1000); const to = String(b.to || '').slice(0, 5);
       const from = targetOf(String(b.from || 'en').slice(0, 5));
       if (!text || !to || to === from) return json({ text: '' }, 200, cors);
+      const name = LANG_NAMES[to] || to;
       try {
-        const out = await env.AI.run('@cf/meta/m2m100-1.2b', { text, source_lang: from, target_lang: to });
-        return json({ text: String(out.translated_text || '').trim() }, 200, cors);
+        const out = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+          messages: [
+            { role: 'system', content: `Translate the user's ${LANG_NAMES[from]} text into ${name}. Translate every sentence, keep questions as questions. Reply with the translation only, nothing else.` },
+            { role: 'user', content: text },
+          ], max_tokens: 300, temperature: 0.2,
+        });
+        const t = String(typeof out === 'string' ? out : (out.response || '')).trim();
+        if (t) return json({ text: t }, 200, cors);
+        throw new Error('empty');
       } catch (e) {
-        // Language not in m2m100 (e.g. Twi): ask the LLM instead.
         try {
-          const name = LANG_NAMES[to] || to;
-          const out = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
-            messages: [
-              { role: 'system', content: `Translate the user's ${LANG_NAMES[from]} text into ${name}. Reply with the translation only, nothing else.` },
-              { role: 'user', content: text },
-            ], max_tokens: 300, temperature: 0.2,
-          });
-          const t = typeof out === 'string' ? out : (out.response || '');
-          return json({ text: String(t).trim() }, 200, cors);
+          const out = await env.AI.run('@cf/meta/m2m100-1.2b', { text, source_lang: from, target_lang: to });
+          return json({ text: String(out.translated_text || '').trim() }, 200, cors);
         } catch (e2) { return json({ error: `translate failed: ${e.message}; ${e2.message}` }, 502, cors); }
       }
     }
