@@ -31,6 +31,7 @@ window.__sly = {
 const tts = {
   voices: {},
   speaking: false,
+  _finish: null,
   pickVoice() {
     if (native) return null;
     const t = target();
@@ -52,12 +53,20 @@ const tts = {
     this.stop();
     if (!text) { onEnd && onEnd(); return; }
     if (native) {
+      let started = false, ended = false;
+      const finish = () => { if (ended) return; ended = true; this.speaking = false; this._finish = null; bridge.onSpeak = null; onEnd && onEnd(); };
+      this._finish = finish;
       bridge.onSpeak = (e) => {
-        if (e.state === 'start') { this.speaking = true; onStart && onStart(); }
+        if (e.state === 'start') { started = true; this.speaking = true; onStart && onStart(); }
         else if (e.state === 'word') { onWord && onWord(); }
-        else if (e.state === 'end' || e.state === 'cancel') { this.speaking = false; bridge.onSpeak = null; onEnd && onEnd(); }
+        // A stray 'cancel' from the previous utterance can land after this handler is installed: only
+        // trust end/cancel once this utterance has started.
+        else if ((e.state === 'end' || e.state === 'cancel') && started) finish();
       };
+      this.speaking = true;
       native.post({ type: 'speak', text, lang: target().tag });
+      // The synthesizer sometimes never reports the end (or never starts): never leave the app stuck.
+      setTimeout(finish, 2500 + text.length * 90);
       return;
     }
     if (!('speechSynthesis' in window)) { onStart && onStart(); setTimeout(() => onEnd && onEnd(), Math.min(6000, 60 * text.length)); return; }
@@ -75,7 +84,7 @@ const tts = {
     speechSynthesis.speak(u);
   },
   stop() {
-    if (native) { native.post({ type: 'stopSpeak' }); }
+    if (native) { native.post({ type: 'stopSpeak' }); if (this._finish) this._finish(); }
     else if ('speechSynthesis' in window) speechSynthesis.cancel();
     this.speaking = false;
   },
@@ -367,7 +376,7 @@ async function translate(text, to, from) {
 }
 function say(text, after) {
   avatar.talking = false; avatar.wordSeen = false;
-  tts.speak(text, {
+  tts.speak(text.replace(/[«»"“”„]/g, ''), {
     onStart: () => { avatar.talking = true; avatar.lastWord = performance.now(); },
     onWord: () => { avatar.wordSeen = true; avatar.wordPulse = 1; avatar.lastWord = performance.now(); },
     onEnd: () => { avatar.talking = false; after && after(); },
@@ -408,6 +417,7 @@ async function askTutor(userText) {
 }
 
 function startListening() {
+  if (state.busy && tts.speaking) { tts.stop(); avatar.talking = false; if (!$('done').classList.contains('hidden')) return; }
   if (state.busy || stt.active) { stt.stop(); return; }
   tts.stop(); avatar.talking = false;
   const mic = $('micBtn'); mic.classList.add('listening');
