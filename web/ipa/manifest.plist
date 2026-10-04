@@ -8,7 +8,7 @@
   </array>
   <key>metadata</key><dict>
     <key>bundle-identifier</key><string>com.assiamah.sylvestere</string>
-    <key>bundle-version</key><string>1.1.0</string>
+    <key>bundle-version</key><string>1.2.0</string>
     <key>kind</key><string>software</string>
     <key>title</key><string>Sylvestere</string>
   </dict>
