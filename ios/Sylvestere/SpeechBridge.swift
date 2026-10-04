@@ -20,7 +20,8 @@ final class SpeechBridge: NSObject, AVSpeechSynthesizerDelegate {
     // Apple's recognizer is pinned to one locale and mangles a mixed sentence ("how do I say... un té por
     // favor"), so the same audio is also written to a wav and sent to the worker's Whisper, which is
     // multilingual. Whisper's text wins; the recognizer's text is the fallback.
-    private static let sttURL = URL(string: "https://sylvestere-api.sylvesterassiamahpm.workers.dev/stt?lang=auto")!
+    private static let sttBase = "https://sylvestere-api.sylvesterassiamahpm.workers.dev/stt?lang="
+    private var sttLang = "en"
     private var audioFile: AVAudioFile?
     private var audioURL: URL?
     private var sttTask: URLSessionDataTask?
@@ -51,6 +52,7 @@ final class SpeechBridge: NSObject, AVSpeechSynthesizerDelegate {
         if recognizer?.locale.identifier.replacingOccurrences(of: "_", with: "-") != lang {
             recognizer = SFSpeechRecognizer(locale: Locale(identifier: lang))
         }
+        sttLang = String(lang.prefix(2))
 
         SFSpeechRecognizer.requestAuthorization { [weak self] status in
             guard let self else { return }
@@ -159,21 +161,24 @@ final class SpeechBridge: NSObject, AVSpeechSynthesizerDelegate {
             return
         }
         emit("onSpeech", ["state": "transcribing", "text": text])
-        var req = URLRequest(url: Self.sttURL)
+        var req = URLRequest(url: URL(string: Self.sttBase + sttLang)!)
         req.httpMethod = "POST"
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = 15
         sttTask = URLSession.shared.uploadTask(with: req, from: data) { [weak self] body, resp, _ in
             try? FileManager.default.removeItem(at: url)
-            var best = text
+            var whisper = ""
             if let body,
                (resp as? HTTPURLResponse)?.statusCode == 200,
                let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-               let t = (obj["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !t.isEmpty {
-                best = t
+               let t = (obj["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) {
+                whisper = t
             }
-            self?.emit("onSpeech", ["state": "final", "text": best])
+            // Recognizer text is primary (right for the target language); Whisper rides along as the
+            // alternate and the tutor reconciles the two. Whisper only leads when the recognizer got nothing.
+            let primary = text.isEmpty ? whisper : text
+            let alt = text.isEmpty ? "" : whisper
+            self?.emit("onSpeech", ["state": "final", "text": primary, "alt": alt])
         }
         sttTask?.resume()
     }

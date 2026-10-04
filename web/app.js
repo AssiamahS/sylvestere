@@ -120,7 +120,7 @@ const stt = {
     bridge.onSpeech = (e) => {
       if (e.state === 'partial') cb.onPartial && cb.onPartial(e.text || '');
       else if (e.state === 'transcribing') { cb.onPartial && cb.onPartial(e.text || ''); setStatus('Transcribing…'); }
-      else if (e.state === 'final') { this.active = false; bridge.onSpeech = null; cb.onFinal && cb.onFinal(e.text || ''); cb.onEnd && cb.onEnd(); }
+      else if (e.state === 'final') { this.active = false; bridge.onSpeech = null; cb.onFinal && cb.onFinal(e.text || '', e.alt || ''); cb.onEnd && cb.onEnd(); }
       else if (e.state === 'error') { this.active = false; bridge.onSpeech = null; cb.onError && cb.onError(e.message || 'speech error'); cb.onEnd && cb.onEnd(); }
     };
     native.post({ type: 'listen', lang: target().tag });
@@ -152,10 +152,10 @@ const stt = {
       // Recognition gave nothing (Chromium forks fail fast): keep recording, the silence
       // detector will stop it and the audio goes to Whisper.
       if (this.media || this.recPending || this.recUsed) return; // recorder path will settle
-      this.settle(cb, '', this.srError);
+      this.settle(cb, '', '', this.srError);
     };
     this.rec = r;
-    try { r.start(); } catch (e) { this.rec = null; if (!this.media) this.settle(cb, '', String(e)); }
+    try { r.start(); } catch (e) { this.rec = null; if (!this.media) this.settle(cb, '', '', String(e)); }
   },
 
   async startRecorder(cb) {
@@ -164,7 +164,7 @@ const stt = {
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
     } catch (e) {
       this.stream = null; this.recPending = false;
-      if (!this.rec) this.settle(cb, '', 'not-allowed');
+      if (!this.rec) this.settle(cb, '', '', 'not-allowed');
       return;
     }
     this.recPending = false;
@@ -177,13 +177,14 @@ const stt = {
       if (this.settled) return;
       const blob = new Blob(this.chunks, { type: REC_MIME });
       const fallback = this.srText;
-      if (!this.heardSpeech || blob.size < 2000) return this.settle(cb, fallback, fallback ? null : this.srError);
+      if (!this.heardSpeech || blob.size < 2000) return this.settle(cb, fallback, '', fallback ? null : this.srError);
       setStatus('Transcribing…');
       try {
-        const r = await fetch(`${API}/stt?lang=auto`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: blob });
+        const r = await fetch(`${API}/stt?lang=${encodeURIComponent(state.target)}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: blob });
         const d = await r.json();
         if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
-        this.settle(cb, (d.text || '').trim() || fallback);
+        const w = (d.text || '').trim();
+        this.settle(cb, fallback || w, fallback ? w : '');
       } catch (e) { this.settle(cb, fallback, fallback ? null : `transcription failed: ${e.message}`); }
     };
     this.media = media; this.recUsed = true;
@@ -222,13 +223,13 @@ const stt = {
     if (this.rec) { try { this.rec.stop(); } catch {} }
     this.stopRecorder();
   },
-  settle(cb, text, err) {
+  settle(cb, text, alt, err) {
     if (this.settled) return;
     this.settled = true; this.active = false;
     if (this.rec) { try { this.rec.abort(); } catch {} this.rec = null; }
     this.releaseMic();
     if (!text && err) cb.onError && cb.onError(err);
-    cb.onFinal && cb.onFinal(text);
+    cb.onFinal && cb.onFinal(text, alt || '');
     cb.onEnd && cb.onEnd();
   },
   stop() {
@@ -387,8 +388,8 @@ function setBusy(b) {
   $('micBtn').disabled = b; $('typeBtn').disabled = b; $('nextBtn').disabled = b;
 }
 
-async function askTutor(userText) {
-  if (userText) state.history.push({ role: 'user', content: userText });
+async function askTutor(userText, altText) {
+  if (userText) state.history.push({ role: 'user', content: userText, ...(altText ? { alt: altText } : {}) });
   setBusy(true); setStatus(`${TUTOR} is thinking…`);
   let data;
   try {
@@ -403,6 +404,13 @@ async function askTutor(userText) {
     setBusy(false);
     if (userText) state.history.pop();
     return;
+  }
+  if (userText && data.heard) {
+    // The tutor saw both transcripts and worked out what was actually said: keep that version.
+    const last = state.history[state.history.length - 1];
+    if (last && last.role === 'user') { last.content = data.heard; delete last.alt; }
+    $('heardText').textContent = data.heard;
+    userText = data.heard;
   }
   state.history.push({ role: 'assistant', content: data.reply });
   state.lastReply = data.reply;
@@ -431,11 +439,11 @@ function startListening() {
       else if (err === 'no-stt') { setStatus('Speech recognition is not available in this browser. Use the keyboard.'); $('typeForm').classList.remove('hidden'); }
       else setStatus(`Did not catch that (${err}). Try again.`);
     },
-    onFinal: (t) => {
+    onFinal: (t, alt) => {
       mic.classList.remove('listening');
       if (!t) { if (!$('status').textContent.startsWith('Did not')) setStatus('I did not hear anything. Try again.'); $('heard').classList.add('hidden'); return; }
       $('heardText').textContent = t;
-      askTutor(t);
+      askTutor(t, alt);
     },
   });
 }

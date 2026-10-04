@@ -71,9 +71,10 @@ function systemPrompt({ scenario, level, native, tutor, target }) {
     `When the learner makes a grammar, vocabulary, gender/agreement or word-order mistake in ${lang}, gently correct it: give the corrected ${lang} sentence and a one-line tip written in ${tipLang}. If their sentence is fine, leave "correction" empty.`,
     nativeName ? `If the learner answers in ${nativeName} instead of ${lang}, put the ${lang} way to say it in "correction", explain in the tip that they should try it in ${lang}, and keep your reply in ${lang}.` : '',
     nativeName ? `Put a complete, natural ${nativeName} translation of your whole reply (every sentence, including the question) in "translation".` : `Leave "translation" as an empty string.`,
+    `The learner speaks into a phone. Their last message may arrive as two machine transcripts: A from a ${lang}-only recognizer (usually right for ${lang}, garbles ${tipLang}) and B from a multilingual one (keeps ${tipLang} words, weaker on short ${lang} phrases). Work out what they most likely actually said, put that cleaned-up sentence in "heard", and reply to THAT. Never treat recognizer noise as a learner mistake; only correct what they clearly said wrong.`,
     `After about 8 exchanges, wrap the scene up naturally and set "done" to true.`,
     `Reply ONLY with a JSON object, no markdown, no prose outside JSON:`,
-    `{"reply": "<what you say to the learner, in ${lang}>", "translation": "<${nativeName ? `your full reply in ${nativeName}` : 'empty string'}>", "correction": "<corrected ${lang} version of the learner's last sentence, or empty string>", "tip": "<one short tip in ${tipLang} about the mistake, or empty string>", "done": false}`,
+    `{"heard": "<what the learner most likely said, cleaned up>", "reply": "<what you say to the learner, in ${lang}>", "translation": "<${nativeName ? `your full reply in ${nativeName}` : 'empty string'}>", "correction": "<corrected ${lang} version of the learner's last sentence, or empty string>", "tip": "<one short tip in ${tipLang} about the mistake, or empty string>", "done": false}`,
   ].filter(Boolean).join('\n');
 }
 
@@ -89,9 +90,10 @@ function extractJSON(text) {
 
 function normalize(obj, raw) {
   if (!obj || typeof obj !== 'object') {
-    return { reply: String(raw || '').trim().slice(0, 600), translation: '', correction: '', tip: '', done: false };
+    return { heard: '', reply: String(raw || '').trim().slice(0, 600), translation: '', correction: '', tip: '', done: false };
   }
   return {
+    heard: String(obj.heard || '').trim(),
     reply: String(obj.reply || obj.response || '').trim(),
     translation: String(obj.translation || '').trim(),
     correction: String(obj.correction || '').trim(),
@@ -266,12 +268,14 @@ export default {
       // so by default Whisper auto-detects instead of being pinned to one locale. ?lang=es pins it.
       const lang = url.searchParams.get('lang');
       const pinned = lang && lang !== 'auto' ? targetOf(lang) : null;
+      const hint = pinned ? `A ${TARGETS[pinned].name} lesson in a cafe. The learner is a beginner and may mix in English words.` : 'A language lesson. The speaker mixes languages mid-sentence.';
       try {
         const bytes = new Uint8Array(buf);
         let b64 = ''; for (let i = 0; i < bytes.length; i += 0x8000) b64 += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
         const out = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
           audio: btoa(b64),
           task: 'transcribe',
+          initial_prompt: hint,
           ...(pinned ? { language: pinned } : {}),
         });
         return json({ text: String(out.text || '').trim() }, 200, cors);
@@ -293,7 +297,10 @@ export default {
     const messages = [{ role: 'system', content: systemPrompt(body) }];
     for (const m of history) {
       if (!m || !m.content) continue;
-      messages.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content).slice(0, 1200) });
+      let content = String(m.content).slice(0, 1200);
+      const alt = m.role !== 'assistant' && m.alt ? String(m.alt).slice(0, 1200) : '';
+      if (alt && alt.trim().toLowerCase() !== content.trim().toLowerCase()) content = `[transcript A] ${content}\n[transcript B] ${alt}`;
+      messages.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content });
     }
     if (!history.length) {
       messages.push({ role: 'user', content: '[The learner has just joined. Open the scene with your first line.]' });
