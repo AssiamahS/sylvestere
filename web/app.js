@@ -90,16 +90,17 @@ if (!native && 'speechSynthesis' in window) {
 // If recognition never answers (Chromium forks without Google's speech keys, e.g. Dia/Brave) the
 // recording goes to the worker's Whisper endpoint instead.
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-const REC_MIME = (window.MediaRecorder && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) ? 'audio/webm;codecs=opus' : null;
+// Safari records audio/mp4; Chromium records webm/opus. The worker's Whisper takes either.
+const REC_MIME = window.MediaRecorder ? (['audio/webm;codecs=opus', 'audio/mp4', 'audio/aac'].find(m => MediaRecorder.isTypeSupported(m)) || null) : null;
 const canRecord = () => Boolean(REC_MIME && navigator.mediaDevices?.getUserMedia);
 
 const stt = {
-  rec: null, media: null, stream: null, ctx: null, active: false, settled: false, chunks: [], heardSpeech: false, timers: [], recPending: false, srError: null,
+  rec: null, media: null, stream: null, ctx: null, active: false, settled: false, chunks: [], heardSpeech: false, timers: [], recPending: false, srError: null, srText: '',
   get available() { return Boolean(native || SR || canRecord()); },
 
   start(cb) {
     this.stop();
-    this.active = true; this.settled = false; this.chunks = []; this.heardSpeech = false; this.srError = null; this.recPending = false; this.recUsed = false;
+    this.active = true; this.settled = false; this.chunks = []; this.heardSpeech = false; this.srError = null; this.recPending = false; this.recUsed = false; this.srText = '';
     if (native) return this.startNative(cb);
     if (!SR && !canRecord()) { cb.onError && cb.onError('no-stt'); cb.onEnd && cb.onEnd(); return; }
     if (canRecord()) this.startRecorder(cb);
@@ -109,6 +110,7 @@ const stt = {
   startNative(cb) {
     bridge.onSpeech = (e) => {
       if (e.state === 'partial') cb.onPartial && cb.onPartial(e.text || '');
+      else if (e.state === 'transcribing') { cb.onPartial && cb.onPartial(e.text || ''); setStatus('Transcribing…'); }
       else if (e.state === 'final') { this.active = false; bridge.onSpeech = null; cb.onFinal && cb.onFinal(e.text || ''); cb.onEnd && cb.onEnd(); }
       else if (e.state === 'error') { this.active = false; bridge.onSpeech = null; cb.onError && cb.onError(e.message || 'speech error'); cb.onEnd && cb.onEnd(); }
     };
@@ -131,7 +133,13 @@ const stt = {
     r.onerror = (ev) => { this.srError = ev.error; };
     r.onend = () => {
       this.rec = null;
-      if (finalText.trim()) return this.settle(cb, finalText.trim());
+      if (finalText.trim()) {
+        // The browser recognizer is pinned to one language and mangles the other half of a mixed
+        // sentence. Keep its text as the fallback, but let Whisper (multilingual) have the final word.
+        this.srText = finalText.trim();
+        if (this.media || this.recPending) { this.stopRecorder(); return; }
+        return this.settle(cb, this.srText);
+      }
       // Recognition gave nothing (Chromium forks fail fast): keep recording, the silence
       // detector will stop it and the audio goes to Whisper.
       if (this.media || this.recPending || this.recUsed) return; // recorder path will settle
@@ -152,20 +160,22 @@ const stt = {
     }
     this.recPending = false;
     if (!this.active || this.settled) { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; return; }
+    if (this.srText) { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; return this.settle(cb, this.srText); }
     const media = new MediaRecorder(this.stream, { mimeType: REC_MIME });
     media.ondataavailable = (e) => { if (e.data.size) this.chunks.push(e.data); };
     media.onstop = async () => {
       this.releaseMic();
       if (this.settled) return;
-      const blob = new Blob(this.chunks, { type: 'audio/webm' });
-      if (!this.heardSpeech || blob.size < 2000) return this.settle(cb, '', this.srError);
+      const blob = new Blob(this.chunks, { type: REC_MIME });
+      const fallback = this.srText;
+      if (!this.heardSpeech || blob.size < 2000) return this.settle(cb, fallback, fallback ? null : this.srError);
       setStatus('Transcribing…');
       try {
-        const r = await fetch(`${API}/stt?lang=${encodeURIComponent(state.target)}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: blob });
+        const r = await fetch(`${API}/stt?lang=auto`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: blob });
         const d = await r.json();
         if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
-        this.settle(cb, (d.text || '').trim());
-      } catch (e) { this.settle(cb, '', `transcription failed: ${e.message}`); }
+        this.settle(cb, (d.text || '').trim() || fallback);
+      } catch (e) { this.settle(cb, fallback, fallback ? null : `transcription failed: ${e.message}`); }
     };
     this.media = media; this.recUsed = true;
     media.start(250);

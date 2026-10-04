@@ -262,11 +262,17 @@ export default {
       // Speech-to-text fallback for browsers without a working Web Speech API (Chromium forks, WKWebView).
       const buf = await request.arrayBuffer();
       if (!buf.byteLength || buf.byteLength > 8 * 1024 * 1024) return json({ error: 'bad audio' }, 400, cors);
+      // Learners mix their own language into the target mid-sentence ("how do I say... un té por favor"),
+      // so by default Whisper auto-detects instead of being pinned to one locale. ?lang=es pins it.
+      const lang = url.searchParams.get('lang');
+      const pinned = lang && lang !== 'auto' ? targetOf(lang) : null;
       try {
+        const bytes = new Uint8Array(buf);
+        let b64 = ''; for (let i = 0; i < bytes.length; i += 0x8000) b64 += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
         const out = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
-          audio: btoa(String.fromCharCode(...new Uint8Array(buf))),
-          language: targetOf(url.searchParams.get('lang')),
+          audio: btoa(b64),
           task: 'transcribe',
+          ...(pinned ? { language: pinned } : {}),
         });
         return json({ text: String(out.text || '').trim() }, 200, cors);
       } catch (e) {

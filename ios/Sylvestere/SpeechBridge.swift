@@ -17,6 +17,14 @@ final class SpeechBridge: NSObject, AVSpeechSynthesizerDelegate {
     private var lastTranscript = ""
     private var finished = false
 
+    // Apple's recognizer is pinned to one locale and mangles a mixed sentence ("how do I say... un té por
+    // favor"), so the same audio is also written to a wav and sent to the worker's Whisper, which is
+    // multilingual. Whisper's text wins; the recognizer's text is the fallback.
+    private static let sttURL = URL(string: "https://sylvestere-api.sylvesterassiamahpm.workers.dev/stt?lang=auto")!
+    private var audioFile: AVAudioFile?
+    private var audioURL: URL?
+    private var sttTask: URLSessionDataTask?
+
     override init() {
         super.init()
         synth.delegate = self
@@ -77,9 +85,21 @@ final class SpeechBridge: NSObject, AVSpeechSynthesizerDelegate {
 
             let input = audioEngine.inputNode
             let format = input.outputFormat(forBus: 0)
+            sttTask?.cancel(); sttTask = nil
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("sly-\(UUID().uuidString).wav")
+            audioURL = url
+            audioFile = try? AVAudioFile(forWriting: url, settings: [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: format.sampleRate,
+                AVNumberOfChannelsKey: format.channelCount,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false,
+            ], commonFormat: format.commonFormat, interleaved: format.isInterleaved)
             input.removeTap(onBus: 0)
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
                 self?.request?.append(buffer)
+                try? self?.audioFile?.write(from: buffer)
             }
             audioEngine.prepare()
             try audioEngine.start()
@@ -131,11 +151,36 @@ final class SpeechBridge: NSObject, AVSpeechSynthesizerDelegate {
         guard !finished else { return }
         finished = true
         teardownAudio()
-        emit("onSpeech", ["state": "final", "text": text])
+        guard let url = audioURL,
+              let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int,
+              size > 40_000,   // under ~0.4s of audio = nothing was said
+              let data = try? Data(contentsOf: url) else {
+            emit("onSpeech", ["state": "final", "text": text])
+            return
+        }
+        emit("onSpeech", ["state": "transcribing", "text": text])
+        var req = URLRequest(url: Self.sttURL)
+        req.httpMethod = "POST"
+        req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 15
+        sttTask = URLSession.shared.uploadTask(with: req, from: data) { [weak self] body, resp, _ in
+            try? FileManager.default.removeItem(at: url)
+            var best = text
+            if let body,
+               (resp as? HTTPURLResponse)?.statusCode == 200,
+               let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+               let t = (obj["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !t.isEmpty {
+                best = t
+            }
+            self?.emit("onSpeech", ["state": "final", "text": best])
+        }
+        sttTask?.resume()
     }
 
     private func teardownAudio() {
         silenceTimer?.invalidate(); silenceTimer = nil
+        audioFile = nil   // closes the wav
         if audioEngine.isRunning {
             audioEngine.stop()
             audioEngine.inputNode.removeTap(onBus: 0)
