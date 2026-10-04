@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#1a0f2e">
-<title>Sylvestere — Speak English with Sylvie</title>
+<title>Sylvestere — Speak Spanish, French, German or English with Sylvie</title>
 <link rel="icon" href="assets/icon.png">
 <link rel="apple-touch-icon" href="assets/icon.png">
 <link rel="stylesheet" href="style.css">
@@ -35,7 +35,15 @@
 <section id="home" class="overlay hidden">
   <div class="home-card">
     <h1>Sylvestere</h1>
-    <p class="sub">Speak English with Sylvie, your AI tutor. Pick a scene, talk, get corrected.</p>
+    <p class="sub">Talk with Sylvie, your AI tutor. Pick a language and a scene, speak, get corrected.</p>
+
+    <h2>I'm learning</h2>
+    <div class="chips" id="targets">
+      <button data-v="es" class="on">🇪🇸 Español</button>
+      <button data-v="fr">🇫🇷 Français</button>
+      <button data-v="de">🇩🇪 Deutsch</button>
+      <button data-v="en">🇺🇸 English</button>
+    </div>
 
     <h2>Scene</h2>
     <div class="chips" id="scenarios">
@@ -57,6 +65,7 @@
     <h2>Translations in</h2>
     <div class="row">
       <select id="native">
+        <option value="en">English</option>
         <option value="fr">Français</option>
         <option value="es">Español</option>
         <option value="pt">Português</option>
@@ -68,11 +77,10 @@
         <option value="ko">한국어</option>
         <option value="hi">हिन्दी</option>
         <option value="tw">Twi</option>
-        <option value="en">None (English only)</option>
       </select>
     </div>
 
-    <button id="start" class="primary">Start talking</button>
+    <button id="start" class="primary"><span id="startLabel">Start talking</span></button>
     <p class="fine" id="capNote"></p>
   </div>
 </section>
@@ -107,7 +115,7 @@
   </div>
 
   <form id="typeForm" class="typeForm hidden">
-    <input id="typeInput" type="text" autocomplete="off" placeholder="Type your answer in English…">
+    <input id="typeInput" type="text" autocomplete="off" placeholder="Type your answer…">
     <button type="submit" class="primary small">Send</button>
   </form>
 </section>

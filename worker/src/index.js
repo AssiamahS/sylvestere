@@ -12,22 +12,31 @@ const ALLOWED_ORIGINS = [
   'http://127.0.0.1:8080',
 ];
 
-const LANG_NAMES = { tw: 'Twi (Akan, Ghana)', fr: 'French', es: 'Spanish', pt: 'Portuguese', de: 'German', it: 'Italian', ar: 'Arabic', zh: 'Chinese', ja: 'Japanese', ko: 'Korean', hi: 'Hindi' };
+const LANG_NAMES = { en: 'English', tw: 'Twi (Akan, Ghana)', fr: 'French', es: 'Spanish', pt: 'Portuguese', de: 'German', it: 'Italian', ar: 'Arabic', zh: 'Chinese', ja: 'Japanese', ko: 'Korean', hi: 'Hindi' };
 
-const LEVEL_HINT = {
-  beginner: 'Use very simple words and short sentences (A1-A2). Speak slowly in spirit: max 2 short sentences per turn.',
-  intermediate: 'Use everyday natural English (B1-B2). Max 3 sentences per turn.',
-  advanced: 'Use rich, idiomatic, native-level English (C1). Max 3 sentences per turn, and push the learner with follow-up questions.',
+// Languages the tutor can TEACH. Scenes are set somewhere the language is spoken so the role-play feels real.
+const TARGETS = {
+  en: { name: 'English', city: 'New York', dest: 'London' },
+  es: { name: 'Spanish', city: 'Madrid', dest: 'Mexico City' },
+  fr: { name: 'French', city: 'Paris', dest: 'Montreal' },
+  de: { name: 'German', city: 'Berlin', dest: 'Vienna' },
 };
+const targetOf = (t) => (TARGETS[t] ? t : 'en');
 
-const SCENARIOS = {
-  cafe: 'You are a barista and the learner is ordering at a busy cafe in New York. Start by greeting them and asking what they would like.',
+const levelHint = (level, lang) => ({
+  beginner: `Use very simple ${lang} words and short sentences (A1-A2). Speak slowly in spirit: max 2 short sentences per turn.`,
+  intermediate: `Use everyday natural ${lang} (B1-B2). Max 3 sentences per turn.`,
+  advanced: `Use rich, idiomatic, native-level ${lang} (C1). Max 3 sentences per turn, and push the learner with follow-up questions.`,
+}[level] || `Use everyday natural ${lang} (B1-B2). Max 3 sentences per turn.`);
+
+const scenarios = ({ city, dest }) => ({
+  cafe: `You are a barista and the learner is ordering at a busy cafe in ${city}. Start by greeting them and asking what they would like.`,
   interview: 'You are a hiring manager interviewing the learner for a job they want. Start by welcoming them and asking them to introduce themselves.',
-  airport: 'You are an airline check-in agent. The learner is flying to London. Start by asking for their passport and destination.',
+  airport: `You are an airline check-in agent at the ${city} airport. The learner is flying to ${dest}. Start by asking for their passport and destination.`,
   doctor: 'You are a friendly doctor. The learner has come in with a cold. Start by asking what brings them in today.',
   smalltalk: 'You and the learner are meeting at a friend\'s party. Start with casual small talk about how they know the host.',
-  hotel: 'You are a hotel receptionist. The learner is checking in after a long flight. Start by welcoming them and asking for their name.',
-};
+  hotel: `You are a hotel receptionist in ${city}. The learner is checking in after a long flight. Start by welcoming them and asking for their name.`,
+});
 
 function corsHeaders(origin) {
   const ok = !origin || ALLOWED_ORIGINS.includes(origin) || origin === 'null' || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
@@ -47,21 +56,25 @@ function json(data, status, extra) {
   });
 }
 
-function systemPrompt({ scenario, level, native, tutor }) {
-  const scene = SCENARIOS[scenario] || SCENARIOS.cafe;
-  const lvl = LEVEL_HINT[level] || LEVEL_HINT.intermediate;
-  const nat = native && native !== 'en' ? native : null;
+function systemPrompt({ scenario, level, native, tutor, target }) {
+  const t = TARGETS[targetOf(target)];
+  const lang = t.name;
+  const sc = scenarios(t);
+  const scene = sc[scenario] || sc.cafe;
+  const nativeName = LANG_NAMES[native] && native !== targetOf(target) ? LANG_NAMES[native] : (targetOf(target) === 'en' ? null : 'English');
+  const tipLang = nativeName || lang;
   return [
-    `You are ${tutor || 'Sylvie'}, a warm, encouraging English conversation tutor inside a language-learning app.`,
+    `You are ${tutor || 'Sylvie'}, a warm, encouraging ${lang} conversation tutor inside a language-learning app. You speak ONLY ${lang} to the learner.`,
     `Role-play: ${scene}`,
-    `Learner level: ${level || 'intermediate'}. ${lvl}`,
+    `Learner level: ${level || 'intermediate'}. ${levelHint(level, lang)}`,
     `Stay in character and keep the conversation moving with a question at the end of most turns.`,
-    `When the learner makes a grammar, vocabulary or word-order mistake, gently correct it: give the corrected sentence and a one-line tip. If their sentence is fine, leave "correction" empty.`,
+    `When the learner makes a grammar, vocabulary, gender/agreement or word-order mistake in ${lang}, gently correct it: give the corrected ${lang} sentence and a one-line tip written in ${tipLang}. If their sentence is fine, leave "correction" empty.`,
+    nativeName ? `If the learner answers in ${nativeName} instead of ${lang}, put the ${lang} way to say it in "correction", explain in the tip that they should try it in ${lang}, and keep your reply in ${lang}.` : '',
     `Always leave "translation" as an empty string (the app translates separately).`,
     `After about 8 exchanges, wrap the scene up naturally and set "done" to true.`,
     `Reply ONLY with a JSON object, no markdown, no prose outside JSON:`,
-    `{"reply": "<what you say to the learner, in English>", "translation": "<reply translated to the learner's language, or empty string>", "correction": "<corrected version of the learner's last sentence, or empty string>", "tip": "<one short tip about the mistake, or empty string>", "done": false}`,
-  ].join('\n');
+    `{"reply": "<what you say to the learner, in ${lang}>", "translation": "", "correction": "<corrected ${lang} version of the learner's last sentence, or empty string>", "tip": "<one short tip in ${tipLang} about the mistake, or empty string>", "done": false}`,
+  ].filter(Boolean).join('\n');
 }
 
 function extractJSON(text) {
@@ -225,9 +238,10 @@ export default {
     if (url.pathname === '/translate' && request.method === 'POST') {
       let b; try { b = await request.json(); } catch { return json({ error: 'bad json' }, 400, cors); }
       const text = String(b.text || '').slice(0, 1000); const to = String(b.to || '').slice(0, 5);
-      if (!text || !to || to === 'en') return json({ text: '' }, 200, cors);
+      const from = targetOf(String(b.from || 'en').slice(0, 5));
+      if (!text || !to || to === from) return json({ text: '' }, 200, cors);
       try {
-        const out = await env.AI.run('@cf/meta/m2m100-1.2b', { text, source_lang: 'en', target_lang: to });
+        const out = await env.AI.run('@cf/meta/m2m100-1.2b', { text, source_lang: from, target_lang: to });
         return json({ text: String(out.translated_text || '').trim() }, 200, cors);
       } catch (e) {
         // Language not in m2m100 (e.g. Twi): ask the LLM instead.
@@ -235,7 +249,7 @@ export default {
           const name = LANG_NAMES[to] || to;
           const out = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
             messages: [
-              { role: 'system', content: `Translate the user's English text into ${name}. Reply with the translation only, nothing else.` },
+              { role: 'system', content: `Translate the user's ${LANG_NAMES[from]} text into ${name}. Reply with the translation only, nothing else.` },
               { role: 'user', content: text },
             ], max_tokens: 300, temperature: 0.2,
           });
@@ -251,7 +265,7 @@ export default {
       try {
         const out = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
           audio: btoa(String.fromCharCode(...new Uint8Array(buf))),
-          language: 'en',
+          language: targetOf(url.searchParams.get('lang')),
           task: 'transcribe',
         });
         return json({ text: String(out.text || '').trim() }, 200, cors);

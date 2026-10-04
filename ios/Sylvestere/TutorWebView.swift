@@ -36,7 +36,7 @@ struct TutorWebView: UIViewRepresentable {
             guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
             switch type {
             case "listen":
-                speech.startListening()
+                speech.startListening(lang: body["lang"] as? String ?? "en-US")
             case "stopListen":
                 speech.stopListening()
             case "speak":

@@ -9,7 +9,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    MARKETING_VERSION: 1.0.0
+    MARKETING_VERSION: 1.1.0
     CURRENT_PROJECT_VERSION: 1
     DEVELOPMENT_TEAM: QGMAWHX827
     CODE_SIGN_STYLE: Automatic
@@ -32,7 +32,7 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIViewControllerBasedStatusBarAppearance: true
         ITSAppUsesNonExemptEncryption: false
-        NSMicrophoneUsageDescription: Sylvestere listens to you so Sylvie can hear your English and correct it.
+        NSMicrophoneUsageDescription: Sylvestere listens to you so Sylvie can hear you speak and correct you.
         NSSpeechRecognitionUsageDescription: Sylvestere turns your speech into text so Sylvie can reply to what you said.
         UIBackgroundModes: [audio]
     settings:

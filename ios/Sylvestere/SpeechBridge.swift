@@ -34,11 +34,15 @@ final class SpeechBridge: NSObject, AVSpeechSynthesizerDelegate {
 
     // MARK: - Recognition
 
-    func startListening() {
+    func startListening(lang: String = "en-US") {
         stopSpeaking()
         stopListening(emitFinal: false)
         finished = false
         lastTranscript = ""
+        // Recognizer locale follows the language being learned (es-ES / fr-FR / de-DE / en-US).
+        if recognizer?.locale.identifier.replacingOccurrences(of: "_", with: "-") != lang {
+            recognizer = SFSpeechRecognizer(locale: Locale(identifier: lang))
+        }
 
         SFSpeechRecognizer.requestAuthorization { [weak self] status in
             guard let self else { return }
@@ -165,7 +169,10 @@ final class SpeechBridge: NSObject, AVSpeechSynthesizerDelegate {
 
     private static func bestVoice(for lang: String) -> AVSpeechSynthesisVoice? {
         let voices = AVSpeechSynthesisVoice.speechVoices().filter { $0.language == lang }
-        let preferred = ["Ava", "Zoe", "Samantha", "Allison", "Nicky", "Joelle"]
+        let preferred = ["Ava", "Zoe", "Samantha", "Allison", "Nicky", "Joelle",          // en
+                         "Mónica", "Monica", "Paulina", "Marisol", "Jorge",                // es
+                         "Amélie", "Amelie", "Audrey", "Aurélie", "Thomas",                // fr
+                         "Anna", "Petra", "Helena", "Markus"]                              // de
         if let v = voices.first(where: { $0.quality == .premium && preferred.contains(where: $0.name.contains) }) { return v }
         if let v = voices.first(where: { $0.quality == .enhanced && preferred.contains(where: $0.name.contains) }) { return v }
         if let v = voices.first(where: { preferred.contains(where: $0.name.contains) }) { return v }

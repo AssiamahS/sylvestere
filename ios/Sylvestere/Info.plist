@@ -25,7 +25,7 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Sylvestere listens to you so Sylvie can hear your English and correct it.</string>
+	<string>Sylvestere listens to you so Sylvie can hear you speak and correct you.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Sylvestere turns your speech into text so Sylvie can reply to what you said.</string>
 	<key>UIBackgroundModes</key>

@@ -8,10 +8,14 @@ const TUTOR = 'Sylvie';
 const GOAL_TURNS = 8;
 const $ = (id) => document.getElementById(id);
 
-const NATIVE_LANG_TAG = {
-  fr: 'fr-FR', es: 'es-ES', pt: 'pt-BR', de: 'de-DE', it: 'it-IT', ar: 'ar-SA',
-  zh: 'zh-CN', ja: 'ja-JP', ko: 'ko-KR', hi: 'hi-IN', tw: 'en-US', en: 'en-US',
+// Languages Sylvie can teach: BCP-47 tag for the recognizer/voice, display name, preferred premium voices.
+const TARGETS = {
+  es: { tag: 'es-ES', name: 'Spanish', voices: ['Mónica', 'Monica', 'Paulina', 'Marisol', 'Google español', 'Microsoft Elvira', 'Jorge'] },
+  fr: { tag: 'fr-FR', name: 'French', voices: ['Amélie', 'Amelie', 'Audrey', 'Aurélie', 'Thomas', 'Google français', 'Microsoft Denise'] },
+  de: { tag: 'de-DE', name: 'German', voices: ['Anna', 'Petra', 'Helena', 'Markus', 'Google Deutsch', 'Microsoft Katja'] },
+  en: { tag: 'en-US', name: 'English', voices: ['Samantha', 'Ava', 'Allison', 'Zoe', 'Google US English', 'Microsoft Aria', 'Microsoft Jenny', 'Karen', 'Moira'] },
 };
+const target = () => TARGETS[state.target] || TARGETS.en;
 
 // ---------- native bridge (iOS WKWebView) ----------
 const native = window.webkit?.messageHandlers?.sly ? {
@@ -25,19 +29,24 @@ window.__sly = {
 
 // ---------- speech: TTS ----------
 const tts = {
-  voice: null,
+  voices: {},
   speaking: false,
   pickVoice() {
-    if (native) return;
+    if (native) return null;
+    const t = target();
+    if (this.voices[t.tag]) return this.voices[t.tag];
     const vs = speechSynthesis.getVoices();
-    if (!vs.length) return;
-    const en = vs.filter(v => /^en[-_]/i.test(v.lang));
-    const prefer = ['Samantha', 'Ava', 'Allison', 'Zoe', 'Google US English', 'Microsoft Aria', 'Microsoft Jenny', 'Karen', 'Moira'];
-    const local = en.filter(v => v.localService);
-    this.voice = local.find(v => prefer.some(p => v.name.includes(p)) && /premium|enhanced/i.test(v.name))
+    if (!vs.length) return null;
+    const code = t.tag.slice(0, 2);
+    const pool = vs.filter(v => v.lang.toLowerCase().startsWith(code));
+    const prefer = t.voices;
+    const local = pool.filter(v => v.localService);
+    const v = local.find(v => prefer.some(p => v.name.includes(p)) && /premium|enhanced/i.test(v.name))
       || local.find(v => prefer.some(p => v.name.includes(p)))
-      || en.find(v => prefer.some(p => v.name.includes(p)))
-      || local.find(v => v.lang === 'en-US') || en.find(v => v.lang === 'en-US') || en[0] || vs[0];
+      || pool.find(v => prefer.some(p => v.name.includes(p)))
+      || local.find(v => v.lang.replace('_', '-') === t.tag) || pool.find(v => v.lang.replace('_', '-') === t.tag) || pool[0] || null;
+    if (v) this.voices[t.tag] = v;
+    return v;
   },
   speak(text, { onStart, onEnd, onWord } = {}) {
     this.stop();
@@ -48,14 +57,14 @@ const tts = {
         else if (e.state === 'word') { onWord && onWord(); }
         else if (e.state === 'end' || e.state === 'cancel') { this.speaking = false; bridge.onSpeak = null; onEnd && onEnd(); }
       };
-      native.post({ type: 'speak', text, lang: 'en-US' });
+      native.post({ type: 'speak', text, lang: target().tag });
       return;
     }
     if (!('speechSynthesis' in window)) { onStart && onStart(); setTimeout(() => onEnd && onEnd(), Math.min(6000, 60 * text.length)); return; }
     const u = new SpeechSynthesisUtterance(text);
-    if (!this.voice) this.pickVoice();
-    if (this.voice) u.voice = this.voice;
-    u.lang = 'en-US'; u.rate = 0.98; u.pitch = 1.05;
+    const voice = this.pickVoice();
+    if (voice) u.voice = voice;
+    u.lang = target().tag; u.rate = 0.98; u.pitch = 1.05;
     let ended = false;
     const finish = () => { if (ended) return; ended = true; this.speaking = false; onEnd && onEnd(); };
     u.onstart = () => { this.speaking = true; onStart && onStart(); };
@@ -72,8 +81,8 @@ const tts = {
   },
 };
 if (!native && 'speechSynthesis' in window) {
-  tts.pickVoice();
-  speechSynthesis.onvoiceschanged = () => tts.pickVoice();
+  speechSynthesis.getVoices();
+  speechSynthesis.onvoiceschanged = () => { tts.voices = {}; };
 }
 
 // ---------- speech: STT ----------
@@ -103,12 +112,12 @@ const stt = {
       else if (e.state === 'final') { this.active = false; bridge.onSpeech = null; cb.onFinal && cb.onFinal(e.text || ''); cb.onEnd && cb.onEnd(); }
       else if (e.state === 'error') { this.active = false; bridge.onSpeech = null; cb.onError && cb.onError(e.message || 'speech error'); cb.onEnd && cb.onEnd(); }
     };
-    native.post({ type: 'listen', lang: 'en-US' });
+    native.post({ type: 'listen', lang: target().tag });
   },
 
   startSR(cb) {
     const r = new SR();
-    r.lang = 'en-US'; r.interimResults = true; r.continuous = false; r.maxAlternatives = 1;
+    r.lang = target().tag; r.interimResults = true; r.continuous = false; r.maxAlternatives = 1;
     let finalText = '';
     r.onresult = (ev) => {
       let interim = '';
@@ -152,7 +161,7 @@ const stt = {
       if (!this.heardSpeech || blob.size < 2000) return this.settle(cb, '', this.srError);
       setStatus('Transcribing…');
       try {
-        const r = await fetch(`${API}/stt`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: blob });
+        const r = await fetch(`${API}/stt?lang=${encodeURIComponent(state.target)}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: blob });
         const d = await r.json();
         if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
         this.settle(cb, (d.text || '').trim());
@@ -314,7 +323,7 @@ const avatar = {
 
 // ---------- session state ----------
 const state = {
-  scenario: 'cafe', level: 'intermediate', native: 'fr',
+  scenario: 'cafe', level: 'intermediate', native: 'en', target: 'es',
   history: [], turns: 0, busy: false, corrections: [], lastReply: '',
 };
 
@@ -327,10 +336,10 @@ function showBubble(data, heardText) {
   $('replyText').textContent = data.reply;
   const tx = $('txText'), tg = $('toggleTx');
   tx.classList.add('hidden'); tg.textContent = '👁 See translation';
-  if (state.native !== 'en') {
+  if (state.native !== state.target) {
     tg.classList.remove('hidden');
     if (data.translation) tx.textContent = data.translation;
-    else { tx.textContent = 'Translating…'; translate(data.reply, state.native).then((t) => { if ($('replyText').textContent === data.reply) tx.textContent = t || 'Translation unavailable'; }); }
+    else { tx.textContent = 'Translating…'; translate(data.reply, state.native, state.target).then((t) => { if ($('replyText').textContent === data.reply) tx.textContent = t || 'Translation unavailable'; }); }
   } else tg.classList.add('hidden');
   const c = $('correction');
   if (data.correction && heardText && data.correction.trim().toLowerCase() !== heardText.trim().toLowerCase()) {
@@ -340,9 +349,9 @@ function showBubble(data, heardText) {
   } else c.classList.add('hidden');
   $('bubble').classList.remove('hidden');
 }
-async function translate(text, to) {
+async function translate(text, to, from) {
   try {
-    const r = await fetch(`${API}/translate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, to }) });
+    const r = await fetch(`${API}/translate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, to, from }) });
     const d = await r.json(); return d.text || '';
   } catch { return ''; }
 }
@@ -366,7 +375,7 @@ async function askTutor(userText) {
   try {
     const r = await fetch(`${API}/chat`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scenario: state.scenario, level: state.level, native: state.native, tutor: TUTOR, history: state.history }),
+      body: JSON.stringify({ scenario: state.scenario, level: state.level, native: state.native, target: state.target, tutor: TUTOR, history: state.history }),
     });
     data = await r.json();
     if (!r.ok || data.error) throw new Error(data.error || `HTTP ${r.status}`);
@@ -384,7 +393,7 @@ async function askTutor(userText) {
   say(data.reply, () => {
     setBusy(false);
     if (data.done || state.turns >= GOAL_TURNS) return finish();
-    setStatus(stt.available ? 'Tap the mic and answer in English' : 'Type your answer in English');
+    setStatus(stt.available ? `Tap the mic and answer in ${target().name}` : `Type your answer in ${target().name}`);
   });
 }
 
@@ -453,9 +462,24 @@ function chipGroup(id, key) {
     state[key] = b.dataset.v;
   });
 }
-chipGroup('scenarios', 'scenario'); chipGroup('levels', 'level');
-const nav = (navigator.language || 'fr').slice(0, 2).toLowerCase();
-if ([...$('native').options].some(o => o.value === nav)) { $('native').value = nav; state.native = nav; }
+chipGroup('scenarios', 'scenario'); chipGroup('levels', 'level'); chipGroup('targets', 'target');
+const hasNative = (v) => [...$('native').options].some(o => o.value === v);
+// Learning language: remembered; translations default to the device language, or English when that IS the target.
+function applyTarget() {
+  const nav = (navigator.language || 'en').slice(0, 2).toLowerCase();
+  let nat = state.native;
+  if (!nat || nat === state.target) nat = (hasNative(nav) && nav !== state.target) ? nav : (state.target === 'en' ? 'fr' : 'en');
+  state.native = nat; $('native').value = nat;
+  $('typeInput').placeholder = `Type your answer in ${target().name}…`;
+  $('startLabel').textContent = `Start talking ${target().name}`;
+  try { localStorage.setItem('sly_target', state.target); } catch {}
+}
+try { const saved = localStorage.getItem('sly_target'); if (TARGETS[saved]) state.target = saved; } catch {}
+$('targets').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === state.target));
+$('targets').addEventListener('click', applyTarget);
+const nav0 = (navigator.language || 'en').slice(0, 2).toLowerCase();
+state.native = (hasNative(nav0) && nav0 !== state.target) ? nav0 : (state.target === 'en' ? 'fr' : 'en');
+applyTarget();
 $('native').addEventListener('change', (e) => { state.native = e.target.value; });
 $('start').addEventListener('click', startSession);
 $('again').addEventListener('click', () => { $('done').classList.add('hidden'); $('home').classList.remove('hidden'); });
